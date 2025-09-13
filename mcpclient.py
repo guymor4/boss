@@ -34,8 +34,9 @@ class MCPClient:
                 await self.session.initialize()
 
                 response = await self.session.call_tool(tool_name, arguments)
-                print(f'Tool call response: {response}', file=sys.stderr)
-    
+                if response.isError:
+                    raise Exception(response.content[0].text)
+
     async def cleanup(self):
         """Clean up resources"""
         # if self.session:

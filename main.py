@@ -1,14 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#     "aiohttp",
-#     "fastapi",
-#     "pydantic",
-#     "typer",
-#     "uvicorn",
-# ]
-# ///
 import asyncio
 from functools import wraps
 import json
@@ -57,9 +46,27 @@ async def main(
         help='Bearer token for MCP server authentication (or set MCP_BEARER_TOKEN environment variable)',
         envvar='MCP_BEARER_TOKEN', show_default=False),
     show_tools: bool = typer.Option(False, '--show-tools', '-s', help='Show discovered tools and exit'),
+    dry_run: bool = typer.Option(False, '--dry-run', '-d', help='Do not perform any tool calls, just show what would be done'),
 ):
-
+    think = True
+    if dry_run:
+        print('*Dry run mode enabled, no tool calls will be performed*', file=sys.stderr)
     available_tools: list[Tool] = []
+    if think:
+        available_tools.append(Tool(
+            name='think',
+            description='Call this function at every step to explain your thought process, before taking any other action',
+            inputSchema={
+                'type': 'object',
+                'properties': {
+                    'thoughts': {
+                        'type': 'string'
+                    },
+                },
+                'required': ['thoughts'],
+            }
+        ))
+        
     if mcp_server:
         assert mcp_server_bearer_token, 'MCP server bearer token is required when using MCP server'
         client = MCPClient('Home Assistant', mcp_server, mcp_server_bearer_token)
@@ -86,36 +93,54 @@ async def main(
     else:    
         print('Discovered tools:', [tool.name for tool in available_tools], file=sys.stderr)
 
-    messages = [{
-        'role': 'user',
-        'content': prompt,
-    }]
     headers = {
-            'Content-Type': 'application/json',
-        }
+        'Content-Type': 'application/json',
+    }
     if api_key:
         headers['Authorization'] = f'Bearer {api_key}'
-    url = f'{endpoint}chat/completions'
+        
     payload = {
-        'model': 'gpt-4o',
-        'messages': messages,
+        'messages': [{
+            'role': 'system',
+            'content': 'You are a helpful assistant that can call tools to perform actions on behalf of the user.',
+        },
+        {
+            'role': 'system',
+            'content': 'Available entities: "TV"',
+        },
+        {
+            'role': 'user',
+            'content': prompt,
+        }],
         'tools': [mcp_tool_to_openai_format(tool) for tool in available_tools],
+        'tool_choice': 'required',
+        'verbosity': 'high',
     }
     
     tool_call: ToolCall | None = None
     async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.post(url, json=payload) as response:
+        async with session.post(f'{endpoint}chat/completions', json=payload) as response:
             response.raise_for_status()
             response = await response.json()
-            print(f'Response: {json.dumps(response, indent=2)}', file=sys.stderr)
+            # Verbose
+            # print(f'Response: {json.dumps(response, indent=2)}', file=sys.stderr)
             tool_call = parse_tool_call_response(response)
     
     if not tool_call:
         print('No tool call detected in response')
         return
     
+    if dry_run:
+        return
+    if think and tool_call.name == 'think':
+        print(f'🧠 {tool_call.arguments["thoughts"]}', file=sys.stderr)
+        return
     print(f'Performing tool call: {tool_call.name} with arguments {json.dumps(tool_call.arguments, indent=2)}')
-    await client.call_tool(tool_call.name, tool_call.arguments)
+    try:
+        await client.call_tool(tool_call.name, tool_call.arguments)
+        print('Tool call completed successfully')
+    except Exception as e:
+        print(f'Failed calling tool: {e}', file=sys.stderr)
 
 def parse_tool_call_response(response: aiohttp.ClientResponse) -> Optional[dict]:
     """Parse the tool call response from the LLM"""
