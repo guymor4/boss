@@ -10,3 +10,6 @@ wheels/
 .venv
 
 homeassistant/
+
+# For now ignore my files
+Makefile
